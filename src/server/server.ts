@@ -1,30 +1,60 @@
-import express from 'express';
-import cors from 'cors';
+import { Client, Events, GatewayIntentBits, Collection } from "discord.js";
+import config from "./config";
+import commands from "./commands";
+import db from "./db";
 
-const isProduction = process.env.NODE_ENV === 'production';
-const isDevelopment = process.env.NODE_ENV === 'development';
-
-const app = express();
-
-if (isDevelopment) {
-	app.use(cors());
+declare module "discord.js" {
+    export interface Client {
+        commands: Collection<unknown, unknown>;
+    }
 }
 
-if (isProduction) {
-	app.use(express.static('public'));
+export const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+
+client.commands = new Collection();
+
+for (const commandKey in commands) {
+    const commandGroup = commands[commandKey as keyof typeof commands];
+
+    for (const fileKey in commandGroup) {
+        const command = commandGroup[fileKey as keyof typeof commandGroup];
+
+        if ("data" in command && "execute" in command) {
+            //@ts-ignore
+            const { name, description } = command.data;
+            client.commands.set(name, command);
+        } else {
+            console.log(`[WARNING] The command at ${command} is missing a required "data" or "execute" property.`);
+        }
+    }
 }
 
-// all our api routes
-app.get('/api/hello', (req, res) => {
-	res.json({ message: 'World' });
+client.once(Events.ClientReady, (readyClient) => {
+    console.log(`Ready! Logged in as ${readyClient.user.tag}`);
 });
 
-// 404 fallback for client side routing
-if (isProduction) {
-	app.get('*', (req, res) => {
-		res.sendFile('index.html', { root: 'public' });
-	});
-}
+client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    const command = interaction.client.commands.get(interaction.commandName);
+
+    if (!command) {
+        console.error(`No command matching ${interaction.commandName} was found.`);
+        return;
+    }
+
+    try {
+        //@ts-ignore
+        await command.execute(interaction);
+    } catch (error) {
+        console.error(error);
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp({ content: "There was an error while executing this command!", ephemeral: true });
+        } else {
+            await interaction.reply({ content: "There was an error while executing this command!", ephemeral: true });
+        }
+    }
+});
+
+
+client.login(config.discord.token);
